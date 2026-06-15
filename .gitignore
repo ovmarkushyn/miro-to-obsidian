@@ -1,0 +1,17 @@
+# Generated drawings (may contain board content)
+*.excalidraw
+*.canvas
+
+# Secrets
+.env
+*.token
+token.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
