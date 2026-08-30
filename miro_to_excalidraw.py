@@ -12,6 +12,8 @@ Usage:
     python3 miro_to_excalidraw.py <board_id> <output.excalidraw>
 
 Board id is the part after /board/ in the Miro URL.
+Example:
+    in url "miro.com/app/board/aaaaaaaaaaa=/" board id is "aaaaaaaaaaa="
 """
 import base64
 import html
@@ -24,29 +26,17 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, parse_qsl, urlunsplit, urlencode
 
 API = "https://api.miro.com/v2"
+API_EXPERIMENTAL = "https://api.miro.com/v2-experimental"
+LIMIT = 50
 NOW = int(time.time() * 1000)
-
-
-def api_get(path, token):
-    req = urllib.request.Request(API + path, headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    })
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        sys.exit(f"Miro API error {e.code} on {path}: {e.read().decode()[:300]}")
-
 
 def paginate(path, token):
     cursor = None
     while True:
-        sep = "&" if "?" in path else "?"
-        url = f"{path}{sep}limit=50" + (f"&cursor={cursor}" if cursor else "")
-        page = api_get(url, token)
+        page = api_get(path, token, LIMIT, cursor)
         for item in page.get("data", []):
             yield item
         cursor = page.get("cursor")
@@ -60,17 +50,18 @@ def fetch_mindmap(board_id, token):
     The regular /items endpoint returns mindmap_node with empty data; the node's
     text only lives under the experimental mindmap_nodes endpoint.
     """
+    url = build_mind_map_nodes_url(board_id)
     out = {}
     cursor = None
+
+    log_start("Fetching mindmap nodes ")
     while True:
-        url = (f"https://api.miro.com/v2-experimental/boards/{board_id}"
-               f"/mindmap_nodes?limit=50" + (f"&cursor={cursor}" if cursor else ""))
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {token}", "Accept": "application/json"})
-        try:
-            page = json.loads(urllib.request.urlopen(req).read())
-        except urllib.error.HTTPError:
-            return out
+        response = make_request_or_none(url, token, LIMIT, cursor)
+        if response is None:
+            break
+
+        page = json.loads(response.read())
+
         for n in page.get("data", []):
             nv = (n.get("data") or {}).get("nodeView") or {}
             nvs = nv.get("style") or {}
@@ -82,19 +73,22 @@ def fetch_mindmap(board_id, token):
                 "fillOpacity": nvs.get("fillOpacity"),
                 "textColor": nvs.get("color"),
             }
+
+        log_progress()
+
         cursor = page.get("cursor")
         if not cursor:
             break
+    log_end()
+
     return out
 
 
 def fetch_image(url, token):
     """Download a Miro image, returning (bytes, mime_type)."""
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}", "Accept": "application/json"})
-    with urllib.request.urlopen(req) as resp:
-        ctype = resp.headers.get("Content-Type", "")
-        body = resp.read()
+    with make_request_or_exit(url, token) as response:
+        ctype = response.headers.get("Content-Type", "")
+        body = response.read()
     if "application/json" in ctype:  # redirect=false returns {"url": "..."}
         direct = json.loads(body).get("url")
         if not direct:
@@ -228,13 +222,136 @@ def font_family(miro):
     return 8 if "mono" in (miro or "").lower() else 6
 
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    board_id, out_path = sys.argv[1], sys.argv[2]
-    token = os.environ.get("MIRO_TOKEN")
+def init():
+    board_id, out_path, token = validate_settings(*read_settings(sys.argv))
+    create_out_dir_if_absent(out_path)
+    log_settings(board_id, out_path, token)
+
+    return board_id, out_path, token
+
+
+def read_settings(args):
+    args_iterator = iter(args[1:])
+    return next(args_iterator, None), next(args_iterator, None), os.environ.get("MIRO_TOKEN")
+
+
+def validate_settings(board_id, out_path, token):
+    validation_errors = []
+
+    if not board_id:
+        validation_errors.append("<board_id> argument is missing.")
+    if not out_path:
+        validation_errors.append("<output.excalidraw> argument is missing.")
     if not token:
-        sys.exit("Set MIRO_TOKEN env var with your Miro access token.")
+        validation_errors.append("MIRO_TOKEN env var with your Miro access token is missing.")
+
+    if len(validation_errors) > 0:
+        validation_errors_str = "\n".join(validation_errors)
+        example = 'Example: python3 miro_to_excalidraw.py "aaaaaaaaaaa=" "/home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw"'
+        sys.exit(f"Errors:\n{validation_errors_str}\n\n{example}")
+
+    validate_board_id(board_id, token)
+
+    return board_id, out_path, token
+
+
+def create_out_dir_if_absent(out_path):
+    out_dir = os.path.dirname(out_path)
+    if out_dir and not os.path.exists(out_dir):
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError as e:
+            sys.exit(f"Output directory '{out_dir}' does not exist and could not be created: {e}")
+
+
+def validate_board_id(board_id, token):
+    """Validate board_id by attempting to connect to the Miro API."""
+    url = build_mind_map_nodes_url(board_id)
+    try:
+        do_make_request(url, token)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Invalid board_id `{board_id}`. `{e.code}` on `{url}`")
+    except urllib.error.URLError as e:
+        sys.exit(f"Invalid board_id `{board_id}`. `{e.errno}-{e.reason}` on `{url}`")
+
+
+def build_mind_map_nodes_url(board_id):
+    return (f"{API_EXPERIMENTAL}/boards/{board_id}"
+            f"/mindmap_nodes")
+
+
+def api_get(relative_path, token, limit=None, cursor=None):
+    with make_request_or_exit(API + relative_path, token, limit, cursor) as response:
+        return json.loads(response.read().decode())
+
+
+def make_request_or_exit(url, token, limit=None, cursor=None):
+    try:
+        return do_make_request(url, token, limit, cursor)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Miro API error {e.code} on {url}: {e.read().decode()[:300]}")
+
+
+def make_request_or_none(url, token, limit=None, cursor=None):
+    try:
+        return do_make_request(url, token, limit, cursor)
+    except urllib.error.HTTPError:
+        return None
+
+def do_make_request(url, token, limit=None, cursor=None):
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+
+    if limit:
+        query["limit"] = limit
+    if cursor:
+        query["cursor"] = cursor
+
+    full_url = urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urlencode(query),
+        parts.fragment,
+    ))
+
+    req = urllib.request.Request(
+        full_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+    )
+
+    return urllib.request.urlopen(req)
+
+
+def log_settings(board_id, out_path, token):
+    print("Board id:", f"'{board_id}'")
+    print("Out path:", f"'{out_path}'")
+    print("Token:", f"'{token}'")
+    print()
+
+
+def log_line(text):
+    print(text)
+
+
+def log_start(text):
+    print(text, end="")
+
+
+def log_progress():
+    print(".", end="")
+
+
+def log_end():
+    print("")
+
+def main():
+    log_line(__doc__)
+
+    board_id, out_path, token = init()
 
     elements = []
     files = {}  # excalidraw file store for embedded images
@@ -270,6 +387,7 @@ def main():
         container["boundElements"].append({"type": "text", "id": cid + "_t"})
         elements.append(t)
 
+    log_start("Fetching board items ")
     for it in paginate(f"/boards/{board_id}/items", token):
         itype = it["type"]
         pos = it.get("position") or {}
@@ -392,6 +510,8 @@ def main():
             valign = style.get("textAlignVertical") or "middle"
             add_bound_text(rect, text, fnum(style.get("fontSize"), 16), tcolor,
                            halign, valign, font_family(style.get("fontFamily")))
+        log_progress()
+    log_end()
 
     def attach(item, position):
         """Exact point on an item from a Miro percent position (else None)."""
@@ -404,6 +524,7 @@ def main():
             return None
         return item["x"] + fx * item["width"], item["y"] + fy * item["height"]
 
+    log_start("Fetching board connectors ")
     for c in paginate(f"/boards/{board_id}/connectors", token):
         start = (c.get("startItem") or {}).get("id")
         end = (c.get("endItem") or {}).get("id")
@@ -448,6 +569,8 @@ def main():
         a["boundElements"].append({"type": "arrow", "id": aid})
         b["boundElements"].append({"type": "arrow", "id": aid})
         elements.append(arrow)
+        log_progress()
+    log_end()
 
     # z-order: large shapes behind small; arrows above shapes; loose text on top
     containers = sorted(
@@ -475,11 +598,13 @@ def main():
         "appState": {"gridSize": None, "viewBackgroundColor": "#ffffff"},
         "files": files,
     }
+
+    log_line(f"Writing imported data -> {out_path}...")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(scene, f, ensure_ascii=False, indent=2)
     rect_n = len(rects)
     arrow_n = sum(1 for e in elements if e["type"] == "arrow")
-    print(f"Wrote {rect_n} shapes, {arrow_n} arrows -> {out_path}")
+    log_line(f"Wrote {rect_n} shapes, {arrow_n} arrows")
 
 
 if __name__ == "__main__":
