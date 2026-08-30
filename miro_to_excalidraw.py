@@ -247,7 +247,7 @@ def validate_settings(board_id, out_path, token):
 
     if len(validation_errors) > 0:
         validation_errors_str = "\n".join(validation_errors)
-        example = 'Example: python3 miro_to_excalidraw.py "aaaaaaaaaaa=" "/home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw"'
+        example = 'Run command example: python3 miro_to_excalidraw.py "aaaaaaaaaaa=" "/home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw"'
         sys.exit(f"Errors:\n{validation_errors_str}\n\n{example}")
 
     validate_board_id(board_id, token)
@@ -329,7 +329,8 @@ def do_make_request(url, token, limit=None, cursor=None):
 def log_settings(board_id, out_path, token):
     print("Board id:", f"'{board_id}'")
     print("Out path:", f"'{out_path}'")
-    print("Token:", f"'{token}'")
+    masked_token = token if len(token) <= 8 else f"{token[:4]}...{token[-4:]}"
+    print("Token:", f"'{masked_token}'")
     print()
 
 
