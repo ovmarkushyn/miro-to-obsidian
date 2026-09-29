@@ -71,7 +71,7 @@ Excalidraw drawings"** (Canvas files open directly).
 
 MIT
 
-### Fork differences
+## Fork differences
 - Added validation to catch missing or invalid parameters early.
 - Ensured the output directory is automatically created if it does not exist or fail if it can not be created.
 Before this change, if the output directory did not exist, the script would run for a long time before failing during the output file write.
