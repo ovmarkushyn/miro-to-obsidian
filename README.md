@@ -70,3 +70,50 @@ Excalidraw drawings"** (Canvas files open directly).
 ## License
 
 MIT
+
+### Fork differences
+- Added validation to catch missing or invalid parameters early.
+- Ensured the output directory is automatically created if it does not exist or fail if it can not be created.
+Before this change, if the output directory did not exist, the script would run for a long time before failing during the output file write.
+- Added settings logging and logging during the import process for better visibility.
+As it may take quite some time visible progress helps in waiting :)
+- Reduced duplicate code around HTTP request execution.
+- Added some unit tests.
+
+### Changed success output example
+```
+Migrate a Miro board into an Excalidraw scene (.excalidraw JSON).
+
+The Obsidian Excalidraw plugin imports .excalidraw files natively (drag into the
+vault, or "Convert to Excalidraw drawing"). Miro shapes/sticky-notes/cards/text
+become rectangles with bound text; connectors become arrows bound to those
+rectangles so they stay attached when you move things around.
+
+Usage:
+    export MIRO_TOKEN="<your-access-token>"
+    python3 miro_to_excalidraw.py <board_id> <output.excalidraw>
+
+Board id is the part after /board/ in the Miro URL.
+Example:
+    in url "miro.com/app/board/aaaaaaaaaaa=/" board id is "aaaaaaaaaaa="
+
+Board id: 'aaaaaaaaaaa='
+Out path: '/home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw'
+Token: 'some token'
+
+Fetching mindmap nodes .
+Fetching board items ............................................................................. .................................................................................................................... .............................................................................................................................................................................
+Fetching board connectors ...................................................................................................................
+Writing imported data -> /home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw...
+Wrote 563 shapes, 115 arrows
+```
+
+### Errors output example
+```
+Errors:
+<board_id> argument is missing.
+<output.excalidraw> argument is missing.
+MIRO_TOKEN env var with your Miro access token is missing.
+
+Run command example: python3 miro_to_excalidraw.py "aaaaaaaaaaa=" "/home/user/Documents/Obsidian Vault/MIRO/miro.excalidraw"
+```
